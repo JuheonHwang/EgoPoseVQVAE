@@ -1,0 +1,21 @@
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# config file
+
+dataset:
+  train: /hdd5/hjh/xr-egopose/data/Dataset/TrainSet
+  val: /hdd5/hjh/xr-egopose/data/Dataset/ValSet
+  test: /hdd5/hjh/xr-egopose/data/Dataset/TestSet
+
+transforms:
+  norm: Neck
+
+data_loader:
+  batch_size: 24
+  shuffle: True
+
+val_data_loader:
+  batch_size: 1
+  shuffle: True
+
+eval:
+  output_file: /hdd5/hjh/xr-egopose/data/eval_res.json
