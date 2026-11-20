@@ -1,0 +1,15 @@
+# Install torch/torchvision first, matching your CUDA setup (https://pytorch.org).
+torch
+torchvision
+numpy
+pyyaml
+easydict
+scikit-image
+pillow
+h5py
+matplotlib
+# SMPL layer used by dataset/smpl.py (AMASS / VQ-VAE only); not on PyPI under this name,
+# install from source: git clone https://github.com/gulvarol/smplpytorch && pip install ./smplpytorch
+# smplpytorch needs these at runtime to unpickle the SMPL model files:
+chumpy
+scipy

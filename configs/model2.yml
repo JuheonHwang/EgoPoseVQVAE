@@ -1,0 +1,20 @@
+name: model2
+dataset:
+  root: ./data/xr-egopose    # contains TrainSet/ ValSet/ TestSet/ ; overridable from CLI
+  train: TrainSet
+  val: ValSet
+  test: TestSet
+  center_crop: true
+  heatmap_size: 47
+  rotation: false            # dataset additionally returns joint rotations
+skeleton: '16'
+transforms:
+  norm: Neck
+model:
+  variant: light              # full | light
+  rotation: false
+data_loader: {batch_size: 24, shuffle: true}
+val_data_loader: {batch_size: 1, shuffle: true}
+train: {epochs: 7, lr: 0.0001, lr_gamma: 0.95, save_every: 5000, heatmap_div: 50}
+output: {ckpt_dir: ./ckpts/model2, log_file: ./train_logs/model2.log}
+eval: {output_file: ./eval_res.json}

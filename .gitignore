@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Outputs
+ckpts/
+train_logs/
+*.pth
+eval_res.json
+
+# Downloaded datasets / models (data/Human36M/ is tracked and needed)
+data/xr-egopose/
+data/AMASS/
+data/smplpytorch/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+.ipynb_checkpoints/
