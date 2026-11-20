@@ -134,3 +134,10 @@ class PoseVQVAE(nn.Module):
     def forward_decoder(self, x):
         x_out = self.vqvae.forward_decoder(x)
         return x_out
+
+
+def build_pose_vqvae(config):
+    """Build PoseVQVAE from a loaded VQ-VAE config (configs/vqvae*.yml)."""
+
+    return PoseVQVAE(down_t=config.model.down_t,
+                     fourier_features=config.model.fourier_features)

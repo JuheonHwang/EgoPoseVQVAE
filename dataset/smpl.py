@@ -3,24 +3,29 @@ From Pose2Mesh_RELEASE by hongsukchoi
 lib/smpl.py
 """
 
-import numpy as np
-import torch
 import os.path as osp
 
+import numpy as np
 
 from smplpytorch.pytorch.smpl_layer import SMPL_Layer
 
+_REPO_DATA = osp.join(osp.dirname(osp.dirname(osp.abspath(__file__))), 'data')
+
 
 class SMPL(object):
-    def __init__(self):
+    def __init__(self, model_root=None):
+        """
+        Keyword Arguments:
+            model_root {str} -- directory with the SMPL model files (smplpytorch
+                ``native/models``); default <repo>/data/smplpytorch/native/models
+        """
+
+        self.model_root = model_root or osp.join(_REPO_DATA, 'smplpytorch', 'native', 'models')
         self.layer = {'neutral': self.get_layer('neutral')}
-        # self.layer = {'male': self.get_layer('male'), 'female': self.get_layer('female'), 'neutral': self.get_layer('neutral')}
         self.vertex_num = 6890
         self.face = self.layer['neutral'].th_faces.numpy()
         self.joint_regressor = self.layer['neutral'].th_J_regressor.numpy().astype(np.float32)  # smpl joint regressor
-        self.joint_regressor_h36m = np.load(osp.join('/hdd4/hjh/Egocentric_3D_pose-main/data', 'Human36M', 'J_regressor_h36m_correct.npy')).astype(np.float32)
-        # self.joint_regressor_coco = np.load(osp.join(cfg.data_dir, 'COCO', 'J_regressor_coco.npy')).astype(np.float32)
-        #  'J_regressor_coco_use_extra_joint.npy' 'J_regressor_coco_all_smpl_joint.npy'
+        self.joint_regressor_h36m = np.load(osp.join(_REPO_DATA, 'Human36M', 'J_regressor_h36m_correct.npy')).astype(np.float32)
         # add nose, L/R eye, L/R ear
         self.face_kps_vertex = (331, 2802, 6262, 3489, 3990)  # mesh vertex idx
         nose_onehot = np.array([1 if i == 331 else 0 for i in range(self.joint_regressor.shape[1])],
@@ -52,4 +57,4 @@ class SMPL(object):
         self.root_joint_idx = self.joints_name.index('Pelvis')
 
     def get_layer(self, gender):
-        return SMPL_Layer(gender=gender, model_root='/hdd4/hjh/Egocentric_3D_pose-main/data' + '/smplpytorch/native/models')
+        return SMPL_Layer(gender=gender, model_root=self.model_root)

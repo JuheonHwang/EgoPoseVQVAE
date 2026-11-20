@@ -6,9 +6,11 @@ Init file
 @author: Denis Tome'
 
 """
-from .config import config
-from .config2 import config2
-from .config3 import config3
-from .config4 import config4
+from .config import config, load_config, read_config
 from .console_logger import ConsoleLogger
-from .io import *
+from .io import (exists, get_subdirs, get_files, write_h5, read_h5,
+                 write_json, read_json)
+
+__all__ = ['config', 'load_config', 'read_config', 'ConsoleLogger',
+           'exists', 'get_subdirs', 'get_files', 'write_h5', 'read_h5',
+           'write_json', 'read_json']

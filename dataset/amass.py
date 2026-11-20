@@ -4,26 +4,44 @@ data/AMASS/dataset.py
 """
 
 
-import os
-import os.path as osp
 import numpy as np
 import glob
 import copy
 import torch
 
-from dataset.smpl import SMPL
-
 
 class AMASS(torch.utils.data.Dataset):
-    def __init__(self, data_path):
-        self.debug = False
+    """AMASS poses regressed to the H36M joint set (14 joints, see rearrange_indices).
 
-        self.data_path = data_path # '/hdd4/cmk/dataset/AMASS/AMASS'
+    Arguments:
+        data_path {str} -- AMASS root, one sub-directory per sub-dataset
+
+    Keyword Arguments:
+        split {str} -- 'train' (sub-sampling ratios per sub-dataset) or
+            'test' (every 60th frame of every sub-dataset)
+        smpl_model_root {str} -- directory holding the SMPL model files
+            (smplpytorch's ``native/models``); default
+            <repo>/data/smplpytorch/native/models
+    """
+
+    SPLITS = ('train', 'test')
+
+    def __init__(self, data_path, split='train', smpl_model_root=None):
+        if split not in self.SPLITS:
+            raise ValueError("split must be one of {}, got {!r}".format(self.SPLITS, split))
+
+        # imported here so that `import dataset` works without smplpytorch
+        from dataset.smpl import SMPL
+
+        self.debug = False
+        self.split = split
+
+        self.data_path = data_path
         
         self.rearrange_indices = [10, 8, 11, 12, 13, 14, 15, 16, 4, 5, 6, 1, 2, 3]
         
         # SMPL joint set
-        self.mesh_model = SMPL()
+        self.mesh_model = SMPL(smpl_model_root)
         self.smpl_root_joint_idx = self.mesh_model.root_joint_idx
         self.face_kps_vertex = self.mesh_model.face_kps_vertex
         self.smpl_vertex_num = 6890
@@ -92,6 +110,9 @@ class AMASS(torch.utils.data.Dataset):
         return datalist
 
     def get_subsampling_ratio(self, dataset_name):
+        if self.split == 'test':
+            return 60
+
         if dataset_name == 'cmu':
             return 60  # 120 -> 10 fps
         elif dataset_name == 'mpi_mosh':

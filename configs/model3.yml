@@ -1,0 +1,24 @@
+name: model3
+dataset:
+  root: ./data/xr-egopose    # contains TrainSet/ ValSet/ TestSet/ ; overridable from CLI
+  train: TrainSet
+  val: ValSet
+  test: TestSet
+  center_crop: true
+  heatmap_size: 47
+  rotation: false            # dataset additionally returns joint rotations
+skeleton: '22'
+transforms:
+  # NOTE: the original run (train3.py / Mocap3) used the 22-joint skeleton, but
+  # dataset/transform.py always looked the root joint up in the default 16-joint
+  # skeleton, where 'Neck' has jid 1. In the 22-joint skeleton jid 1 is 'Hips',
+  # so the run was effectively normalised around Hips. Hips reproduces that run.
+  norm: Hips
+model:
+  variant: light              # full | light
+  rotation: false
+data_loader: {batch_size: 24, shuffle: true}
+val_data_loader: {batch_size: 1, shuffle: true}
+train: {epochs: 7, lr: 0.0001, lr_gamma: 0.95, save_every: 5000, heatmap_div: 50}
+output: {ckpt_dir: ./ckpts/model3, log_file: ./train_logs/model3.log}
+eval: {output_file: ./eval_res.json}
