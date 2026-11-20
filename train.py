@@ -1,42 +1,72 @@
-# %matplotlib notebook
+"""Train a SelfPose (EgoPose) model, e.g.
+
+    python train.py --config configs/model1.yml --data-root /path/to/xr-egopose
+
+Every experiment (models 1-6) is described by its YAML file in configs/.
+"""
+import argparse
 import os
-
-os.environ['CUDA_DEVICE_ORDER'] = "PCI_BUS_ID"
-os.environ['CUDA_VISIBLE_DEVICES'] = "0"
-
-from model.self_pose import SelfPose
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import torch.optim as optim
 import time
-import copy
-import torch
-import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-from torchvision import transforms
-import glob
-from PIL import Image
-import io
-# import imgaug.augmenters as iaa
-from torch.optim import lr_scheduler
-import logging
 
-from torchvision import transforms
-from base import SetType
-import dataset.transform as trsf
-from dataset import Mocap
-from utils import config, ConsoleLogger
-from utils import evaluate, io
+from utils.runtime import init_gpu
+init_gpu()  # CUDA_VISIBLE_DEVICES must be set before torch is imported
+
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+import torch.optim as optim  # noqa: E402
+from torch.optim import lr_scheduler  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from torchvision import transforms  # noqa: E402
+
+import dataset.transform as trsf  # noqa: E402
+from base import SetType  # noqa: E402
+from dataset import Mocap  # noqa: E402
+from model.self_pose import build_self_pose  # noqa: E402
+from utils import config, load_config  # noqa: E402
+from utils.runtime import get_device, override_output, setup_logging  # noqa: E402
 
 
-def train_model(model, dataloaders, device, logger,
-                pose_loss, heatmap_loss, heatmap_loss2,l1_loss,
-                cos_loss, optimizer, scheduler, num_epochs=3):
+def compute_loss(model, batch, device, mse):
+    """Forward one batch.
+
+    Returns the total loss and a list of (name, value) loss terms for logging.
+    """
+
+    image, _, gt_pose, _, gt_hm, *_ = batch
+    image = image.to(device).float()
+    gt_pose = gt_pose.to(device).float()
+    gt_hm = gt_hm.to(device).float()
+
+    n_joints = len(config.skel)
+    pred_pose, hm, pred_hm, *_ = model(image)
+    pred_pose = pred_pose.view(-1, n_joints, 3)
+    gt_pose = gt_pose.view(-1, n_joints, 3)
+
+    p_loss = mse(pred_pose, gt_pose)
+    hmp_loss = mse(hm, gt_hm)
+    hmp_emb_loss = mse(pred_hm, hm)
+    hm_div = config.train.heatmap_div
+
+    if not config.model.rotation:
+        loss = p_loss + (hmp_loss / hm_div) + (hmp_emb_loss / hm_div)
+        return loss, [('l2 pose', p_loss), ('hmp loss', hmp_loss),
+                      ('hmp2', hmp_emb_loss)]
+
+    # NOTE: this reproduces experiments 4 and 5, where the "rotation" loss was
+    # computed between the predicted and ground-truth *pose* (not between
+    # pred_rot and gt_rot, which are never used). Probably unintended.
+    r_loss = mse(pred_pose, gt_pose)
+    loss = (p_loss + (r_loss / config.train.rot_div)
+            + (hmp_loss / hm_div) + (hmp_emb_loss / hm_div))
+    return loss, [('l2 pose', p_loss), ('rot', r_loss), ('hmp loss', hmp_loss),
+                  ('hmp2', hmp_emb_loss)]
+
+
+def train_model(model, dataloaders, device, logger, mse, optimizer,
+                scheduler, num_epochs):
     since = time.time()
-
-    best_model_wts = copy.deepcopy(model.state_dict())
-    best_loss = float('inf')
+    save_every = config.train.save_every
+    ckpt_dir = config.output.ckpt_dir
 
     for epoch in range(num_epochs):
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -45,121 +75,107 @@ def train_model(model, dataloaders, device, logger,
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
             if phase == 'train':
-                model.train()  # Set model to training mode
+                model.train()
             else:
-                model.eval()   # Set model to evaluate mode
+                model.eval()
 
             running_loss = 0.0
-            # Iterate over data.
-            sizes = {"train":0, "val":0}
+            size = 0
             i = 0
-            for image, p2d, gt_pose, action, gt_hm in dataloaders[phase]:
-                image = image.to(device).float()
-                gt_pose = gt_pose.to(device).float()
-                gt_hm = gt_hm.to(device).float()
+            for batch in dataloaders[phase]:
+                batch_size = batch[0].size(0)
 
-                # zero the parameter gradients
-                optimizer.zero_grad()
+                if phase == 'train':
+                    optimizer.zero_grad()
 
-                # forward
-                # track history if only in trainf
                 with torch.set_grad_enabled(phase == 'train'):
-                    pred_pose, hm, pred_hm = model(image)
-                    pred_pose = pred_pose.view(-1,16,3)
-                    gt_pose = gt_pose.view(-1,16,3)
-#                     _, preds = torch.max(outputs, 1)
-                    p_loss = pose_loss(pred_pose, gt_pose)
-#                     cosine_loss = torch.mean(1 - cos_loss(pred_pose, gt_pose))
-#                     l1_loss_pose = l1_loss(pred_pose, gt_pose)
-                    hmp_loss = heatmap_loss(hm, gt_hm)
-                    hmp_emb_loss = heatmap_loss2(pred_hm, hm)
-
-                    loss = p_loss + (hmp_loss/50) + (hmp_emb_loss/50) #+ (l1_loss_pose) + (0.1*cosine_loss)
-                    # backward + optimize only if in training phase
+                    loss, terms = compute_loss(model, batch, device, mse)
                     if phase == 'train':
-
                         loss.backward()
                         optimizer.step()
 
-                # statistics
-                running_loss += loss.item() * image.size(0)
-                sizes[phase] += image.size(0)
+                running_loss += loss.item() * batch_size
+                size += batch_size
                 if i % 10 == 0:
                     logger.info(f"Epoch: {epoch} Phase {phase}: loss = {loss.item()} Step = {i}")
-                    logger.info(f"l2 pose {p_loss.item()} hmp loss {hmp_loss.item()} hmp2 {hmp_emb_loss.item()} LR: {scheduler.get_last_lr()}")# "l1 loss",l1_loss_pose.item(), "cos loss",cosine_loss.item())
+                    terms = ' '.join(f"{name} {value.item()}" for name, value in terms)
+                    logger.info(f"{terms} LR: {scheduler.get_last_lr()}")
                 i += 1
-                if i % 5000 == 0:
-                    torch.save(model.state_dict(), f"./ckpts/model1/epoch{epoch}_iter{i}.pth")
-#                 running_corrects += torch.sum(preds == labels.data)
+                # NOTE: as in the original scripts this also runs in the
+                # validation phase (same file name as the training one).
+                if i % save_every == 0:
+                    torch.save(model.state_dict(),
+                               os.path.join(ckpt_dir, f"epoch{epoch}_iter{i}.pth"))
+
             if phase == 'train':
                 scheduler.step()
-            epoch_loss = running_loss / sizes[phase]
-#             epoch_acc = running_corrects.double() / dataset_sizes[phase]
-
-            print('{} Loss: {:.4f}'.format(
-                phase, epoch_loss))
-            
- 
+            epoch_loss = running_loss / size
+            print('{} Loss: {:.4f}'.format(phase, epoch_loss))
 
         print()
-        torch.save(model.state_dict(), f"./ckpts/model1/{epoch}_epoch_{epoch_loss}.pth")
+        # epoch_loss is the one of the last phase, i.e. the validation loss
+        torch.save(model.state_dict(),
+                   os.path.join(ckpt_dir, f"{epoch}_epoch_{epoch_loss}.pth"))
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:4f}'.format(best_loss))
-
-    # load best model weights
-
-#     model.load_state_dict(best_model_wts)
     return model
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train a SelfPose model')
+    parser.add_argument('--config', required=True, help='configs/modelN.yml')
+    parser.add_argument('--data-root', help='dataset root (TrainSet/ValSet/TestSet); overrides dataset.root')
+    parser.add_argument('--gpu', help='GPU id(s) for CUDA_VISIBLE_DEVICES')
+    parser.add_argument('--epochs', type=int, help='overrides train.epochs')
+    parser.add_argument('--batch-size', type=int, help='overrides data_loader.batch_size')
+    parser.add_argument('--output-dir', help='write checkpoints to <dir>/ckpts/<last part of output.ckpt_dir>/ and the log to '
+                        '<dir>/<name of output.log_file> instead of the output.* paths of the config')
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    load_config(args.config, **{
+        'dataset.root': args.data_root,
+        'train.epochs': args.epochs,
+        'data_loader.batch_size': args.batch_size})
+    override_output(config, args.output_dir)
+
+    os.makedirs(config.output.ckpt_dir, exist_ok=True)
+    logger = setup_logging(config.output.log_file)
+
     # ------------------- Data loader -------------------
     data_transform = transforms.Compose([
         trsf.ImageTrsf(),
         trsf.Joints3DTrsf(),
         trsf.ToTensor()])
 
-    # let's load data from training and validation set as example
-    data = Mocap(
-        config.dataset.train,
-        SetType.TRAIN,
-        transform=data_transform)
+    data = Mocap(config.dataset.train, SetType.TRAIN, transform=data_transform)
     train_loader = DataLoader(
         data,
         batch_size=config.data_loader.batch_size,
         shuffle=config.data_loader.shuffle)
-    
-    val_data = Mocap(
-        config.dataset.val,
-        SetType.VAL,
-        transform=data_transform)
+
+    val_data = Mocap(config.dataset.val, SetType.VAL, transform=data_transform)
     valid_loader = DataLoader(
         val_data,
         batch_size=config.val_data_loader.batch_size,
         shuffle=config.val_data_loader.shuffle)
-        
-    model = SelfPose()
     dataloaders = {"train": train_loader, "val": valid_loader}
-    pose_criterion = nn.MSELoss()
-    hmp_loss = nn.MSELoss()
-    hmp_loss2 = nn.MSELoss()
-    l1_loss = nn.L1Loss()
-    cos_sim = nn.CosineSimilarity(dim=2, eps=1e-6)
-    optimizer_ft = optim.Adam(model.parameters(), lr=0.0001) 
-    scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=1, gamma=0.95)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # ------------------- Model, loss, optimizer -------------------
+    model = build_self_pose(config)
+    mse = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=config.train.lr)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=config.train.lr_gamma)
+    device = get_device()
     model.to(device)
-    logging.basicConfig(filename="./train_logs/model1.log", format='%(message)s',
-                        level=logging.INFO, filemode='w')
-    logger = logging.getLogger('train_logger')
     print("loaded", device)
 
-    best = train_model(model, dataloaders, device, logger,
-                       pose_criterion, hmp_loss, hmp_loss2, l1_loss,
-                       cos_sim, optimizer_ft, scheduler, 7)
+    train_model(model, dataloaders, device, logger, mse, optimizer,
+                scheduler, config.train.epochs)
 
 
 if __name__ == "__main__":

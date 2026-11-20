@@ -1,101 +1,81 @@
-import os
+"""Visualise SelfPose predictions against the ground truth, e.g.
 
-os.environ['CUDA_DEVICE_ORDER'] = "PCI_BUS_ID"
-os.environ['CUDA_VISIBLE_DEVICES'] = "0"
-
-from model.self_pose import SelfPose
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import torch.optim as optim
+    python test.py --config configs/model6.yml --checkpoint ckpts/model6/epoch6_iter15000.pth
+"""
+import argparse
 import time
-import copy
-import torch
-import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-from torchvision import transforms
-import glob
-from PIL import Image
-import io
 
-from torchvision import transforms
-from base import SetType
-import dataset.transform as trsf
-from dataset import Mocap
-from utils import config, ConsoleLogger
-from utils import evaluate, io
+from utils.runtime import init_gpu
+init_gpu()  # CUDA_VISIBLE_DEVICES must be set before torch is imported
 
-def visualization(pred_pose, gt_pose, p_loss, inference_time):
-    # assume that batch size is 1
-    pred_pose = pred_pose[0]
-    gt_pose = gt_pose[0]
-    
-    fig = plt.figure(figsize=plt.figaspect(0.5))
-    fig.suptitle(str(p_loss) + '_' + str(inference_time), fontsize=16)
-    
-    linewidth = 4
-    kinetic_chain = [[1, 0], [1, 2, 3, 4], [1, 5, 6, 7], [1, 8, 9, 10, 11], [1, 12, 13, 14, 15]]
-    colors = ['black', 'red', 'blue', 'red', 'blue',
-              'darkblue', 'darkblue', 'darkblue', 'darkblue', 'darkblue',
-              'darkred', 'darkred', 'darkred', 'darkred', 'darkred']
-    
-    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-    for i, (chain, color) in enumerate(zip(kinetic_chain, colors)):
-        ax1.plot3D(pred_pose[chain, 0], pred_pose[chain, 1], pred_pose[chain, 2], linewidth=linewidth, color=color)
-        ax2.plot3D(gt_pose[chain, 0], gt_pose[chain, 1], gt_pose[chain, 2], linewidth=linewidth, color=color)
-    
-    ax1.scatter(pred_pose[:, 0], pred_pose[:, 1], pred_pose[:, 2])
-    ax2.scatter(gt_pose[:, 0], gt_pose[:, 1], gt_pose[:, 2])
-    
-    ax1.set_xlabel('Pred', fontsize=10, rotation=100)
-    ax2.set_xlabel('GT', fontsize=10, rotation=100)
-    
-    plt.show()
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from torchvision import transforms  # noqa: E402
+
+import dataset.transform as trsf  # noqa: E402
+from base import SetType  # noqa: E402
+from dataset import Mocap  # noqa: E402
+from model.self_pose import build_self_pose  # noqa: E402
+from utils import config, load_config  # noqa: E402
+from utils.runtime import get_device  # noqa: E402
+from utils.visualize import show_poses  # noqa: E402
+
+SET_TYPES = {'train': SetType.TRAIN, 'val': SetType.VAL, 'test': SetType.TEST}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Test a SelfPose model')
+    parser.add_argument('--config', required=True, help='configs/modelN.yml')
+    parser.add_argument('--checkpoint', required=True, help='state dict written by train.py')
+    parser.add_argument('--data-root', help='dataset root (TrainSet/ValSet/TestSet); overrides dataset.root')
+    parser.add_argument('--split', choices=sorted(SET_TYPES), default='test',
+                        help='split to evaluate (default: test)')
+    parser.add_argument('--gpu', help='GPU id(s) for CUDA_VISIBLE_DEVICES')
+    return parser.parse_args()
+
 
 def main():
-    # ------------------- Data loader -------------------
+    args = parse_args()
+    load_config(args.config, **{'dataset.root': args.data_root})
+
     data_transform = transforms.Compose([
         trsf.ImageTrsf(),
         trsf.Joints3DTrsf(),
         trsf.ToTensor()])
 
-    # let's load data from training and validation set as example
-    test_data = Mocap(
-        config.dataset.train,
-        SetType.TRAIN,
-        transform=data_transform)
-    # test_data = Mocap(
-    #     config.dataset.test,
-    #     SetType.TEST,
-    #     transform=data_transform)
+    test_data = Mocap(config.dataset[args.split], SET_TYPES[args.split],
+                      transform=data_transform)
     test_loader = DataLoader(
         test_data,
         batch_size=config.val_data_loader.batch_size,
         shuffle=False)
-        
-    model = SelfPose()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model.load_state_dict(torch.load("./ckpts/model1/epoch6_iter15000.pth"))
+
+    device = get_device()
+    model = build_self_pose(config)
+    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.to(device)
     model.eval()
-    
+
     pose_loss = nn.MSELoss()
-    
-    for image, p2d, gt_pose, action, gt_hm in test_loader:
+    n_joints = len(config.skel)
+
+    for image, _, gt_pose, *_ in test_loader:
         image = image.to(device).float()
         gt_pose = gt_pose.to(device).float()
-        gt_hm = gt_hm.to(device).float()
-        
+
         start = time.time()
-        pred_pose = model.inference(image)
+        with torch.no_grad():
+            pred_pose = model.inference(image)
         inference_time = time.time() - start
-        pred_pose = pred_pose.detach().cpu().view(-1, 16, 3)
-        gt_pose = gt_pose.detach().cpu().view(-1, 16, 3)
-        
+        pred_pose = pred_pose.cpu().view(-1, n_joints, 3)
+        gt_pose = gt_pose.cpu().view(-1, n_joints, 3)
+
         p_loss = pose_loss(pred_pose, gt_pose)
-                
-        visualization(pred_pose.numpy(), gt_pose.numpy(), p_loss.numpy(), inference_time)
+
+        show_poses([pred_pose.numpy(), gt_pose.numpy()], ['Pred', 'GT'],
+                   config.skeleton, str(p_loss.numpy()) + '_' + str(inference_time))
+
 
 if __name__ == "__main__":
     main()
